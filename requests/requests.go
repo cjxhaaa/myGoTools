@@ -4,11 +4,11 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"gopkg.in/xmlpath.v2"
+	"encoding/json"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"net/http/cookiejar"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -19,6 +19,8 @@ type Options struct {
 	Client    *http.Client
 	Method    string
 	URL       string
+	Data      interface{}
+	Json      bool
 	Timeout   int
 	Headers   map[string]string
 	Retry     int
@@ -32,97 +34,10 @@ type Response struct {
 }
 
 var DefaultHeaders = map[string]string{
-	"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
+	"Accept": "*/*",
 	"Accept-Encoding": "",
-	"Accept-Language": "zh-CN,zh;q=0.9",
 	"Connection": "keep-alive",
-	"User-Agent":"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_13_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/70.0.3538.102 Safari/537.36",
-}
-
-type Selector struct {
-	body    []byte
-	reader  io.Reader
-	root    *xmlpath.Node
-}
-
-func Node2Selector(node *xmlpath.Node) *Selector {
-	return &Selector{
-		body: node.Bytes(),
-		root: node,
-	}
-}
-
-func (selector *Selector) Gets(xpath interface{}) ([]*xmlpath.Node, error) {
-	if selector.reader == nil {
-		selector.reader = bytes.NewReader(selector.body)
-	}
-
-	var err error
-	root := selector.root
-	if root == nil {
-		root, err = xmlpath.ParseHTML(selector.reader)
-		if err != nil {
-			panic(err)
-		}
-		selector.root = root
-	}
-
-	var xpaths []string
-	switch xpath.(type) {
-	case string:
-		xpaths = []string{xpath.(string)}
-	case []string:
-		xpaths = xpath.([]string)
-	}
-
-	for _, xpath := range xpaths {
-		result := []*xmlpath.Node{}
-		_path := xmlpath.MustCompile(xpath)
-		iter := _path.Iter(root)
-		for iter.Next() {
-			result = append(result, iter.Node())
-		}
-
-		if len(result) > 0 {
-			return result, nil
-		}
-
-	}
-
-	return []*xmlpath.Node{}, NodeNotFound(xpaths)
-}
-
-func (selector Selector) Get(xpath interface{}) (*xmlpath.Node, error) {
-	node, err := selector.Gets(xpath)
-	if err != nil {
-		return nil, err
-	} else {
-		return node[0], err
-	}
-}
-
-func (selector *Selector) GetNode(xpaths interface{}) (*Selector, error) {
-	node, err := selector.Get(xpaths)
-	if err != nil {
-		return nil, err
-	} else {
-		return Node2Selector(node), nil
-	}
-}
-
-func (selector *Selector) GetNodes(xpaths interface{}) ([]*Selector, error) {
-	selectors := []*Selector{}
-	nodes, err := selector.Gets(xpaths)
-
-	if err != nil {
-		return selectors, err
-	} else {
-		for _, item := range nodes {
-			selectors = append(selectors, Node2Selector(item))
-		}
-
-		return selectors, nil
-	}
+	"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_13_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/64.0.3282.186 Safari/537.36",
 }
 
 
@@ -131,29 +46,27 @@ func NodeNotFound(xpaths []string) error {
 }
 
 
-func InitCookie(client *http.Client) (*http.Client,error ){
-	jar,err := cookiejar.New(nil)
+func InitCookie(client *http.Client) *http.Client {
+	jar,_ := cookiejar.New(nil)
 	client.Jar = jar
-	return client,err
+	return client
 }
 
-func InitClient() (*http.Client, error) {
+func InitClient() *http.Client {
 	client := &http.Client{
-		Transport: &http.Transport{
-			DisableKeepAlives:true,
-		},
 	}
 	return InitCookie(client)
 }
 
 func Request(options Options) (*Response, error) {
+	var bodyReader io.Reader
 	method := options.Method
 	method = strings.ToUpper(method)
 
 	//set client
 	client := options.Client
 	if client == nil {
-		client,_ = InitClient()
+		client = InitClient()
 	}
 
 	//set history
@@ -177,14 +90,37 @@ func Request(options Options) (*Response, error) {
 		headers.Set(name, value)
 	}
 
+	if options.Method == "POST" {
+		headers.Set("Content-Type","application/x-www-form-urlencoded")
+	}
+
 	if options.Headers != nil {
 		for name, value := range options.Headers {
 			headers.Set(name,value)
 		}
 	}
 
+	// set body
+	if options.Data != nil {
+		switch h := options.Data.(type) {
+		case string:
+			bodyReader = strings.NewReader(h)
+		case map[string]interface{}:
+			if options.Json {
+				if bodyBytes, err := json.Marshal(h); err != nil {
+					panic(err)
+				} else {
+					bodyReader = strings.NewReader(string(bodyBytes))
+				}
+			}
+		case url.Values:
+			bodyReader = strings.NewReader(h.Encode())
+		}
+
+	}
+	//fmt.Println(bodyReader)
 	//new request
-	request, err := http.NewRequest(method, options.URL, nil)
+	request, err := http.NewRequest(method, options.URL, bodyReader)
 	if err != nil {
 		panic(err)
 	}
@@ -201,7 +137,7 @@ func Request(options Options) (*Response, error) {
 
 	retry := options.Retry
 	if retry == 0 {
-		retry = 5
+		retry = 1
 	}
 
 	var response *http.Response
@@ -210,7 +146,7 @@ func Request(options Options) (*Response, error) {
 	for i := 0; i < retry; i++ {
 		response, err = client.Do(request)
 		if err == nil && response.StatusCode <  500 {
-			response_body, err = ioutil.ReadAll(response.Body)
+			response_body, err = _ReadResponseBody(response)
 			if err == nil {
 				break
 			}
@@ -219,7 +155,7 @@ func Request(options Options) (*Response, error) {
 		if err == nil && i+1 < retry {
 			response.Body.Close()
 		}
-
+		fmt.Println(err)
 		time.Sleep(time.Second * 1)
 	}
 
@@ -245,3 +181,22 @@ func Request(options Options) (*Response, error) {
 	return &Response{response,&Selector{body:response_body},response_body,history}, err
 }
 
+func _ReadResponseBody(r *http.Response) ([]byte, error) {
+	buffer := bytes.NewBuffer(make([]byte, 0, 65536))
+	_, err := io.Copy(buffer, r.Body)
+	if err != nil {
+		buffer.Truncate(0)
+		return nil, err
+	}
+	temp := buffer.Bytes()
+	length := len(temp)
+	var body []byte
+	//are we wasting more than 10% space?
+	if cap(temp) > (length + length/10) {
+		body = make([]byte, length)
+		copy(body, temp)
+	} else {
+		body = temp
+	}
+	return body, nil
+}
