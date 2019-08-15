@@ -2,9 +2,9 @@ package requests
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
@@ -105,6 +105,8 @@ func Request(options Options) (*Response, error) {
 		switch h := options.Data.(type) {
 		case string:
 			bodyReader = strings.NewReader(h)
+		case url.Values:
+			bodyReader = strings.NewReader(h.Encode())
 		case map[string]interface{}:
 			if options.Json {
 				if bodyBytes, err := json.Marshal(h); err != nil {
@@ -113,8 +115,6 @@ func Request(options Options) (*Response, error) {
 					bodyReader = strings.NewReader(string(bodyBytes))
 				}
 			}
-		case url.Values:
-			bodyReader = strings.NewReader(h.Encode())
 		}
 
 	}
