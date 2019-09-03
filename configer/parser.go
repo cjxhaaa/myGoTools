@@ -1,4 +1,4 @@
-package configParser
+package configer
 
 import (
 	"bufio"

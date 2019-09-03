@@ -54,6 +54,9 @@ func InitCookie(client *http.Client) *http.Client {
 
 func InitClient() *http.Client {
 	client := &http.Client{
+		Transport: &http.Transport{
+			DisableKeepAlives: true,   // 防止保持长连接
+		},
 	}
 	return InitCookie(client)
 }
