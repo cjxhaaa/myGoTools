@@ -16,6 +16,8 @@ var (
 		"0":false,"no":false,"false":false,"off":false}
 )
 
+const commentPrefix = "#"
+
 
 type configObj struct {
 	sections      map[string]map[string]string
@@ -52,7 +54,7 @@ func New(filename string) *configObj {
 	for scanner.Scan() {
 
 		lineValue := strings.TrimSpace(scanner.Text())
-		if lineValue == "" {
+		if lineValue == "" || strings.HasPrefix(lineValue, commentPrefix) {
 			continue
 		}
 
